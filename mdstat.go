@@ -28,12 +28,15 @@ var (
 	recoveryLineFinishRE = regexp.MustCompile(`finish=(.+)min`)
 	recoveryLineSpeedRE  = regexp.MustCompile(`speed=(.+)[A-Z]`)
 	componentDeviceRE    = regexp.MustCompile(`(.*)\[\d+\]`)
+	personalityRE        = regexp.MustCompile(`\[(.*)\]`)
 )
 
 // MDStat holds info parsed from /proc/mdstat.
 type MDStat struct {
 	// Name of the device.
 	Name string
+	// Personality of the device.
+	Personality string
 	// activity-state of the device.
 	ActivityState string
 	// Number of active disks.
@@ -80,10 +83,24 @@ func (fs FS) MDStat() ([]MDStat, error) {
 func parseMDStat(mdStatData []byte) ([]MDStat, error) {
 	mdStats := []MDStat{}
 	lines := strings.Split(string(mdStatData), "\n")
+	var personalitiesRE *regexp.Regexp = nil
 
 	for i, line := range lines {
+		if strings.HasPrefix(line, "Personalities") {
+			personalities := make([]string, 0)
+			personalityFields := strings.Fields(line)
+			for _, field := range personalityFields {
+				match := personalityRE.FindStringSubmatch(field)
+				if match == nil {
+					continue
+				}
+				personalities = append(personalities, regexp.QuoteMeta(match[1]))
+			}
+			personalitiesRE = regexp.MustCompile(strings.Join(personalities, "|"))
+			continue
+		}
+
 		if strings.TrimSpace(line) == "" || line[0] == ' ' ||
-			strings.HasPrefix(line, "Personalities") ||
 			strings.HasPrefix(line, "unused") {
 			continue
 		}
@@ -94,6 +111,16 @@ func parseMDStat(mdStatData []byte) ([]MDStat, error) {
 		}
 		mdName := deviceFields[0] // mdx
 		state := deviceFields[2]  // active or inactive
+
+		personality := "unknown"
+		if len(deviceFields) > 3 && personalitiesRE != nil {
+			for _, field := range deviceFields[3:] {
+				if personalitiesRE.FindStringSubmatch(field) != nil {
+					personality = field
+					break
+				}
+			}
+		}
 
 		if len(lines) <= i+3 {
 			return nil, fmt.Errorf("error parsing %q: too few lines for md device", mdName)
@@ -147,6 +174,7 @@ func parseMDStat(mdStatData []byte) ([]MDStat, error) {
 
 		mdStats = append(mdStats, MDStat{
 			Name:                   mdName,
+			Personality:            personality,
 			ActivityState:          state,
 			DisksActive:            active,
 			DisksFailed:            fail,
